@@ -1,0 +1,329 @@
+---
+title: "Final Project"
+author: "Annabelle Marsh"
+date: "5/21/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(ggplot2)
+library(manipulate)
+library(deSolve)
+library(FME)
+```
+
+## Plot data
+
+```{r}
+# Input data, t in hours and P in absorbtion 
+Ampicillin <- read_table2("Data.csv")
+t = Ampicillin$time
+P0 = Ampicillin$control
+ABSconversion = 8 * 10^8 #absorbance to CFUs/mL conversion - ratio taken from textbook
+C=P0*ABSconversion #control data in CFUs/mL
+
+P0.1 = Ampicillin$`0.1`
+C0.1 = P0.1*ABSconversion #0.1 ug/mL concentration data in CFUs/mL
+
+P0.5 = Ampicillin$`0.5`
+C0.5 = P0.5*ABSconversion #0.5 ug/mL concentration data in CFUs/mL
+
+P1 = Ampicillin$`1`
+C1 = P1*ABSconversion #1 ug/mL concentration data in CFUs/mL
+
+P3 = Ampicillin$`3`
+C3 = P3*ABSconversion #3 ug/mL concentration data in CFUs/mL
+```
+
+```{r}
+#plot of growth data from all concentrations
+plot(t, C, xlab = "Time (minutes)", ylab = "Bacterial population (bacteria/mL)",
+     ylim = c(0, 10e8), main = "Bacterial Growth in the Presense of Ampicillin")
+points(t, C0.1, pch = 2)
+points(t, C0.5, pch = 3)
+points(t, C1, pch = 4)
+points(t, C3, pch = 5)
+legend("topleft", c("0 ug/mL", "0.1 ug/mL", "0.5 ug/mL", "1 ug/mL", "3 ug/mL"),
+       pch = 1:5)
+```
+
+## Create the model and solve the control for carrying capacity and growth rate
+```{r}
+#solve the mathematical model
+ABX = function(params, t, p0, D0){
+  with(as.list(c(params)),{
+    ABX.model= function(t,y,params){
+      with(as.list(c(params,y)),{
+        # model equations
+        dpR = r*pR*(1- ((pR+pS)/K))              #bacterial growth, resistant to  ABX
+        dpS = r*pS*(1- ((pR+pS)/K)) - alpha*A*pS #bacterial growth, susceptible
+        dD = alpha*A*pS - delta*D              #dying phase
+        list(c(dpR, dpS, dD))
+      })}
+    y0=c(pR=fracR*p0, pS=(1-fracR)*p0, D=D0)
+    out=ode(y0,t,ABX.model,params)
+    as.data.frame(out)
+  })
+}
+#control
+#no antibiotic and no antibacterial death, percent resistant irrelevant
+ABX.error = function(unknown_params){
+  with(as.list(unknown_params),{
+    # solve ode system for a given set of parameters
+    ABX.output = ABX(c(r = r, K = K, alpha = 0, delta = 0, A = 0, fracR=0), 
+                     t, p0 = C[1], D0 = 0)  
+    # return vector of squared residuals
+    return(((ABX.output$pR+ABX.output$pS+ABX.output$D)-C)^2) #sum each population for total pop.
+  })
+}
+
+#guesses from previously found params
+unknown_params <- c(r = 0.02, K = 2.2e8)
+fitControl = modFit(f=ABX.error, p = unknown_params, lower = c(0)) #minimize cost function
+fitControl$par
+r = fitControl$par[["r"]] # Save the parameters from the control fit
+K = fitControl$par[["K"]]
+
+#evaluate model at best fit parameters
+modelSoln = ABX(c(r = r, K = K, alpha = 0, delta = 0, A = 0,
+                  fracR = 0), t, p0 = C[1], D0 = 0)
+#plot model
+plot(t, C, ylab = "Population Size", xlab = "Time (minutes)", main = "Control", ylim = c(0,10e8))
+lines(modelSoln$time, (modelSoln$pR+modelSoln$pS+modelSoln$D))
+```
+## Using the previously found carrying capacity and growth rate, solve all concentrations for the other parameters
+```{r}
+ABX.error = function(unknown_params){
+  with(as.list(unknown_params),{
+    #Same r and K from before, unknown params alpha, delta, and fracR (fraction resistant). A determined by concentration.
+      # 0.1 ug/mL 
+    ABX.outputC0.1 = ABX(c(r = r, K = K, alpha = alpha, 
+                       delta = delta, A = 0.1, fracR = fracR), 
+                     t = t, p0 = C0.1[1], D0 = 0)
+      # 0.5 ug/mL 
+    ABX.outputC0.5 = ABX(c(r = r, K = K, alpha = alpha, 
+                       delta = delta, A = 0.5, fracR = fracR), 
+                     t = t, p0 = C0.5[1], D0 = 0)
+      # 1 ug/mL 
+    ABX.outputC1 = ABX(c(r = r, K = K, alpha = alpha, 
+                       delta = delta, A = 1, fracR = fracR), 
+                     t = t, p0 = C1[1], D0 = 0)
+      # 3 ug/mL 
+    ABX.outputC3 = ABX(c(r = r, K = K, alpha = alpha, 
+                       delta = delta, A = 3, fracR = fracR), 
+                     t = t, p0 = C3[1], D0 = 0) 
+    # return vector of squared residuals
+    # sum models to get the total population, subtract the data, and then square
+    return(
+      # 0.1 ug/mL 
+      (ABX.outputC0.1$pR+ABX.outputC0.1$pS+ABX.outputC0.1$D-C0.1)^2 +
+      # 0.5 ug/mL
+      (ABX.outputC0.5$pR+ABX.outputC0.5$pS+ABX.outputC0.5$D-C0.5)^2 + 
+      # 1 ug/mL
+      (ABX.outputC1$pR+ABX.outputC1$pS+ABX.outputC1$D-C1)^2 +
+      # 3 ug/mL
+      (ABX.outputC3$pR+ABX.outputC3$pS+ABX.outputC3$D-C3)^2) 
+  })
+}
+
+unknown_params <- c(alpha = 0.02,
+                       delta = 0.01, fracR = .05) # averaged results from previous fits to determine these params
+
+# fit the model to all datasets besides control. 
+# control is excluded because none of the parameters being fit impact the control due to A being 0.
+# lower and upper bounds are because alpha and delta are rate parameters and fracR is a fraction.
+fit = modFit(f=ABX.error, p = unknown_params, lower = c(0, 0, 0), upper = c(1,1,1)) 
+```
+## Fit all experimental datasets using previously determined r, K, alpha, and delta, but with unknown percent resistant (fracR)
+### Fit 0.1ug/mL
+```{r}
+#0.1 micrograms/mL
+ABX.error0.1 = function(unknown_params){
+  with(as.list(unknown_params),{
+    # solve ode system for a given set of parameters
+    ABX.output = ABX(c(r = r, K = K, alpha = fit$par[["alpha"]], 
+                       delta = fit$par[["delta"]], A = 0.1, fracR = fracR), 
+                     t, p0 = C0.1[1], D0 = 0)  
+    # return vector of squared residuals
+    return(((ABX.output$pR+ABX.output$pS+ABX.output$D)-C0.1)^2) #sum each population for total pop.   
+  })
+}
+#guesses from slider
+unknown_params0.1 <- c(fracR = 0.2)
+fit0.1 = modFit(f=ABX.error0.1, p = unknown_params0.1, lower = c(0), upper = c(1)) #minimize cost function
+fit0.1$par
+#just fit fracR, use previous fits for other parameters
+modelSoln0.1 = ABX(params = c(r = r, K = K, alpha = fit$par[["alpha"]],
+                      delta = fit$par[["delta"]], A = 0.1, fracR = fit0.1$par[["fracR"]]),
+           t, p0 = C0.1[1], D0 = 0)
+```
+### Fit 0.5ug/mL
+```{r}
+#0.5 micrograms/mL 
+ABX.error0.5 = function(unknown_params){
+  with(as.list(unknown_params),{
+    # solve ode system for a given set of parameters
+    ABX.output = ABX(c(r = r, K = K, alpha = fit$par[["alpha"]], 
+                       delta = fit$par[["delta"]], A = 0.5, fracR = fracR), 
+                     t, p0 = C0.5[1], D0 = 0)  
+    # return vector of squared residuals
+    return(((ABX.output$pR+ABX.output$pS+ABX.output$D)-C0.5)^2) #sum each population for total pop.   
+  })
+}
+#guesses from slider
+unknown_params0.5 <- c(fracR = 0.1)
+#just fit fracR, use previous fits for other parameters
+fit0.5 = modFit(f=ABX.error0.5, p = unknown_params0.5, lower = c(0), upper = c(1)) #minimize cost function
+fit0.5$par
+
+modelSoln0.5 = ABX(params = c(r = r, K = K, alpha = fit$par[["alpha"]],
+                      delta = fit$par[["delta"]], A = 0.5, fracR = fit0.5$par[["fracR"]]),
+           t, p0 = C0.5[1], D0 = 0)
+```
+### Fit 1ug/mL
+```{r}
+#1 micrograms/mL, fix value (do not fit)
+ABX.error1 = function(unknown_params){
+  with(as.list(unknown_params),{
+    # solve ode system for a given set of parameters
+    ABX.output = ABX(c(r = r, K = K, alpha = fit$par[["alpha"]], 
+                       delta = fit$par[["delta"]], A = 1, fracR = fracR), 
+                     t, p0 = C1[1], D0 = 0)  
+    # return vector of squared residuals
+    return(((ABX.output$pR+ABX.output$pS+ABX.output$D)-C1)^2) #sum each population for total pop.   
+  })
+}
+#guesses from slider
+unknown_params1 <- c(fracR = 0.09)
+fit1 = modFit(f=ABX.error1, p = unknown_params1, lower = c(0), upper = c(1)) #minimize cost function
+fit1$par
+#just fit fracR, use previous fits for other parameters
+modelSoln1 = ABX(params = c(r = r, K = K, alpha = fit$par[["alpha"]],
+                      delta = fit$par[["delta"]], A = 1, fracR = fit1$par[["fracR"]]),
+           t, p0 = C1[1], D0 = 0)
+```
+### Fit 3ug/mL
+```{r}
+#3 micrograms/mL, fix value (do not fit)
+ABX.error3 = function(unknown_params){
+  with(as.list(unknown_params),{
+    # solve ode system for a given set of parameters
+    ABX.output = ABX(c(r = r, K = K, alpha = fit$par[["alpha"]], 
+                       delta = fit$par[["delta"]], A = 3, fracR = fracR), 
+                     t, p0 = C3[1], D0 = 0)  
+    # return vector of squared residuals
+    return(((ABX.output$pR+ABX.output$pS+ABX.output$D)-C3)^2) #sum each population for total pop.   
+  })
+}
+#guesses from slider
+unknown_params3 <- c(fracR = 0.04)
+fit3 = modFit(f=ABX.error3, p = unknown_params3, lower = c(0), upper = c(1)) #minimize cost function
+fit3$par
+#just fit fracR, use previous fits for other parameters
+modelSoln3 = ABX(params = c(r = r, K = K, alpha = fit$par[["alpha"]],
+                      delta = fit$par[["delta"]], A = 3, fracR = fit3$par[["fracR"]]),
+           t, p0 = C3[1], D0 = 0)
+```
+## Plot the final results
+```{r}
+#plot the results
+#first, plot the data
+plot(t, C, xlab = "Time (minutes)", ylab = "Bacterial population (bacteria/mL)",
+     ylim = c(0, 10e8), main = "Model and Data")
+points(t, C0.1, pch = 2)
+points(t, C0.5, pch = 3)
+points(t, C1, pch = 4)
+points(t, C3, pch = 5)
+#create the legend for the data
+legend("topleft", c("0 ug/mL", "0.1 ug/mL", "0.5 ug/mL", "1 ug/mL", "3 ug/mL"),
+       pch = 1:5)
+
+#plot the models
+lines(modelSoln$time, (modelSoln$pR+modelSoln$pS+modelSoln$D))
+lines(modelSoln0.1$time, (modelSoln0.1$pR+modelSoln0.1$pS+modelSoln0.1$D), lty = 2)
+lines(modelSoln0.5$time, (modelSoln0.5$pR+modelSoln0.5$pS+modelSoln0.5$D), lty = 3)
+lines(modelSoln1$time, (modelSoln1$pR+modelSoln1$pS+modelSoln1$D), lty = 4)
+lines(modelSoln3$time, (modelSoln3$pR+modelSoln3$pS+modelSoln3$D), lty = 5)
+#create the legend for the models
+legend("topleft", c("0 ug/mL", "0.1 ug/mL", "0.5 ug/mL", "1 ug/mL", "3 ug/mL"),
+       pch = c(1,2,3,4,5), lty = c(1,2,3,4,5))
+```
+
+## Plot all parts of the model for 0.1 ug/mL 
+```{r}
+# plot the data
+plot(t, C0.1, xlab = "Time (minutes)", ylab = "Bacterial population (bacteria/mL)",
+     ylim = c(0, 10e8), main = "Model of 0.1 ug/mL Ampicillin")
+# plot the total population model
+lines(modelSoln0.1$time, (modelSoln0.1$pR+modelSoln0.1$pS+modelSoln0.1$D), col = 1)
+# plot the resistant population model
+lines(modelSoln0.1$time, modelSoln0.1$pR, col = 2)
+# plot the susceptible popluation model
+lines(modelSoln0.1$time, modelSoln0.1$pS, col = 3)
+# plot the dying population model
+lines(modelSoln0.1$time, modelSoln0.1$D, col = 4)
+# create the legend
+legend("topleft", c("Model", "Resistant", "Susceptible", "Dying", "Data"), col = c(1,2,3,4,1), lty = c(1,1,1,1,NA), pch = c(NA,NA,NA,NA,1))
+
+```
+
+## Plot all parts of the model for 0.5 ug/mL 
+```{r}
+# plot the data
+plot(t, C0.5, xlab = "Time (minutes)", ylab = "Bacterial population (bacteria/mL)",
+     ylim = c(0, 10e8), main = "Model of 0.5 ug/mL Ampicillin")
+# plot the total population model
+lines(modelSoln0.5$time, (modelSoln0.5$pR+modelSoln0.5$pS+modelSoln0.5$D), col = 1)
+# plot the resistant population model
+lines(modelSoln0.5$time, modelSoln0.5$pR, col = 2)
+# plot the susceptible popluation model
+lines(modelSoln0.5$time, modelSoln0.5$pS, col = 3)
+# plot the dying population model
+lines(modelSoln0.5$time, modelSoln0.5$D, col = 4)
+# create the legend
+legend("topleft", c("Model", "Resistant", "Susceptible", "Dying", "Data"), col = c(1,2,3,4,1), lty = c(1,1,1,1,NA), pch = c(NA,NA,NA,NA,1))
+
+```
+
+## Plot all parts of the model for 1 ug/mL 
+```{r}
+# plot the data
+plot(t, C1, xlab = "Time (minutes)", ylab = "Bacterial population (bacteria/mL)",
+     ylim = c(0, 10e8), main = "Model of 1 ug/mL Ampicillin")
+# plot the total population model
+lines(modelSoln1$time, (modelSoln1$pR+modelSoln1$pS+modelSoln1$D), col = 1)
+# plot the resistant population model
+lines(modelSoln1$time, modelSoln1$pR, col = 2)
+# plot the susceptible popluation model
+lines(modelSoln1$time, modelSoln1$pS, col = 3)
+# plot the dying population model
+lines(modelSoln1$time, modelSoln1$D, col = 4)
+# create the legend
+legend("topleft", c("Model", "Resistant", "Susceptible", "Dying", "Data"), col = c(1,2,3,4,1), lty = c(1,1,1,1,NA), pch = c(NA,NA,NA,NA,1))
+
+```
+
+## Plot all parts of the model for 3 ug/mL 
+```{r}
+# plot the data
+plot(t, C3, xlab = "Time (minutes)", ylab = "Bacterial population (bacteria/mL)",
+     ylim = c(0, 10e8), main = "Model of 3 ug/mL Ampicillin")
+# plot the total population model
+lines(modelSoln3$time, (modelSoln3$pR+modelSoln3$pS+modelSoln3$D), col = 1)
+# plot the resistant population model
+lines(modelSoln3$time, modelSoln3$pR, col = 2)
+# plot the susceptible popluation model
+lines(modelSoln3$time, modelSoln3$pS, col = 3)
+# plot the dying population model
+lines(modelSoln3$time, modelSoln3$D, col = 4)
+# create the legend
+legend("topleft", c("Model", "Resistant", "Susceptible", "Dying", "Data"), col = c(1,2,3,4,1), lty = c(1,1,1,1,NA), pch = c(NA,NA,NA,NA,1))
+
+```
+```{r}
+fracRparams = c(fit3$par[["fracR"]], fit1$par[["fracR"]], fit0.5$par[["fracR"]], fit0.1$par[["fracR"]])
+concentration = c(3,1,0.5,0.1)
+plot(concentration, fracRparams * 100,  xlab = "Ambicillin Concentration ug/mL", ylab = "Percent Resistant")
+```
