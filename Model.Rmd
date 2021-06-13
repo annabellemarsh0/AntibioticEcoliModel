@@ -18,7 +18,7 @@ library(FME)
 
 ```{r}
 # Input data, t in hours and P in absorbtion 
-Ampicillin <- read_table2("Data.csv")
+Ampicillin <- read_csv("Data.tsv")
 t = Ampicillin$time
 P0 = Ampicillin$control
 ABSconversion = 8 * 10^8 #absorbance to CFUs/mL conversion - ratio taken from textbook
